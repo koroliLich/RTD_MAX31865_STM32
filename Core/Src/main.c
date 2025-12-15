@@ -35,6 +35,13 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define SPI_TIMEOUT 100
+
+// PT100
+#define REF_RESISTOR 430 // check by multimetr
+#define NOMINAL_RESIST 100
+#define RTD_SENS 0.385
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,9 +52,11 @@
 /* Private variables ---------------------------------------------------------*/
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim2;
+
 /* USER CODE BEGIN PV */
 
-char* msg = "VirtualComPort\n\r";
+volatile uint8_t timer_flag = 0;
 
 /* USER CODE END PV */
 
@@ -55,12 +64,36 @@ char* msg = "VirtualComPort\n\r";
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+uint8_t MAX31865_Read (uint8_t address) {
+
+	uint8_t tx = address;
+	uint8_t rx = 0;
+
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	HAL_SPI_Transmit(&hspi1, &tx, 1, SPI_TIMEOUT);
+	HAL_SPI_Receive(&hspi1, &rx, 1, SPI_TIMEOUT);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+
+	return rx;
+}
+
+void MAX31865_Write (uint8_t address, uint8_t data) {
+
+	uint8_t tx[2] = {address | 0x80, data};
+
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	HAL_SPI_Transmit(&hspi1, tx, 2, SPI_TIMEOUT);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+
+}
 
 /* USER CODE END 0 */
 
@@ -95,7 +128,13 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_USB_DEVICE_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  HAL_TIM_Base_Start_IT(&htim2);
+
+  MAX31865_Write(0x00, 0xC1);
+  HAL_Delay(100);
 
   /* USER CODE END 2 */
 
@@ -103,10 +142,23 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  if (timer_flag) {
+		  timer_flag = 0;
+		  uint8_t msb = MAX31865_Read(0x01);
+		  uint8_t lsb = MAX31865_Read(0x02);
+		  uint16_t adc_value = ((msb << 8) | lsb) >> 1;
 
-	  CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
-	  HAL_Delay(500);
+		  char msg[64];
 
+		  if (adc_value) {
+			  float resist_measure = ((float)adc_value * REF_RESISTOR) / 0x7FFF;
+			  float temperature =  (resist_measure - 100) / RTD_SENS;
+			  sprintf(msg, "Temperature: %.2f C | Resistance: %.2f Ohm\r\n", temperature, resist_measure);
+		  }
+		  else sprintf(msg, "Error: POR State\r\n");
+
+		  CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
+	  }
 
     /* USER CODE END WHILE */
 
@@ -201,6 +253,51 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 15999;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -243,6 +340,12 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_TIM_PeriodElapsedCallback (TIM_HandleTypeDef *htim) {
+	if (htim->Instance == TIM2) {
+		timer_flag = 1;
+	}
+}
 
 /* USER CODE END 4 */
 
