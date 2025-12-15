@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "usbd_cdc_if.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,6 +46,8 @@
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
+
+char* msg = "VirtualComPort\n\r";
 
 /* USER CODE END PV */
 
@@ -99,6 +103,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+	  CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
+	  HAL_Delay(500);
+
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
