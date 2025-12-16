@@ -57,6 +57,7 @@ TIM_HandleTypeDef htim2;
 /* USER CODE BEGIN PV */
 
 volatile uint8_t timer_flag = 0;
+uint32_t number_of_measurements = 0;
 
 /* USER CODE END PV */
 
@@ -106,6 +107,8 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
+	char msg[64];
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -134,7 +137,10 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim2);
 
   MAX31865_Write(0x00, 0xC1);
-  HAL_Delay(100);
+  HAL_Delay(2000); // wait for init MAX and USB_DEVICE
+
+  sprintf(msg, "|          No |   Temp(C) |\r\n");
+  CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
 
   /* USER CODE END 2 */
 
@@ -148,12 +154,12 @@ int main(void)
 		  uint8_t lsb = MAX31865_Read(0x02);
 		  uint16_t adc_value = ((msb << 8) | lsb) >> 1;
 
-		  char msg[64];
 
 		  if (adc_value) {
+			  number_of_measurements++;
 			  float resist_measure = ((float)adc_value * REF_RESISTOR) / 0x7FFF;
 			  float temperature =  (resist_measure - 100) / RTD_SENS;
-			  sprintf(msg, "Temperature: %.2f C | Resistance: %.2f Ohm\r\n", temperature, resist_measure);
+			  sprintf(msg, "| %10lu. | %9.1f |\r\n", number_of_measurements, temperature);
 		  }
 		  else sprintf(msg, "Error: POR State\r\n");
 
