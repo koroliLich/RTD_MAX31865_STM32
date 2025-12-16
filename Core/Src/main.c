@@ -53,11 +53,18 @@
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 /* USER CODE BEGIN PV */
 
 volatile uint8_t timer_flag = 0;
 uint32_t number_of_measurements = 0;
+
+uint32_t btn_press_start = 0;
+uint8_t led_mode_active = 0;
+
+int32_t global_tenths = 0;
+float current_temperature = 0.0f;
 
 /* USER CODE END PV */
 
@@ -66,6 +73,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -78,10 +86,10 @@ uint8_t MAX31865_Read (uint8_t address) {
 	uint8_t tx = address;
 	uint8_t rx = 0;
 
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi1, &tx, 1, SPI_TIMEOUT);
 	HAL_SPI_Receive(&hspi1, &rx, 1, SPI_TIMEOUT);
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_SET);
 
 	return rx;
 }
@@ -90,10 +98,49 @@ void MAX31865_Write (uint8_t address, uint8_t data) {
 
 	uint8_t tx[2] = {address | 0x80, data};
 
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi1, tx, 2, SPI_TIMEOUT);
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_SET);
 
+}
+
+
+void Update_LED_Frequency(int tenths_val) {
+
+    if (tenths_val == 0) tenths_val = 10;
+
+    uint32_t new_period = 10000 / (tenths_val * 2);
+
+    TIM3->ARR = new_period;
+
+    if (htim3.State != HAL_TIM_STATE_BUSY) {
+    	TIM3->CNT = 0;
+        HAL_TIM_Base_Start_IT(&htim3);
+    }
+}
+
+void Handle_Button() {
+    if (HAL_GPIO_ReadPin(UserKEY_GPIO_Port, UserKEY_Pin) == GPIO_PIN_RESET) {
+        if (btn_press_start == 0) {
+            btn_press_start = HAL_GetTick();
+        }
+    }
+    else {
+        if (btn_press_start != 0) {
+            uint32_t duration = HAL_GetTick() - btn_press_start;
+            btn_press_start = 0;
+            if (duration >= 500 && duration <= 2000) { // without dead spot from 2000ms to 3000ms (change task)
+                led_mode_active = 0;
+                HAL_TIM_Base_Stop_IT(&htim3);
+                HAL_GPIO_WritePin(UserLED_GPIO_Port, UserLED_Pin, GPIO_PIN_SET);
+            }
+            else if (duration > 2000 && duration <= 5000) {
+                led_mode_active = 1;
+
+                Update_LED_Frequency(global_tenths);
+            }
+        }
+    }
 }
 
 /* USER CODE END 0 */
@@ -132,6 +179,7 @@ int main(void)
   MX_SPI1_Init();
   MX_USB_DEVICE_Init();
   MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Base_Start_IT(&htim2);
@@ -148,6 +196,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+	  Handle_Button();
+
 	  if (timer_flag) {
 		  timer_flag = 0;
 		  uint8_t msb = MAX31865_Read(0x01);
@@ -158,8 +209,21 @@ int main(void)
 		  if (adc_value) {
 			  number_of_measurements++;
 			  float resist_measure = ((float)adc_value * REF_RESISTOR) / 0x7FFF;
-			  float temperature =  (resist_measure - 100) / RTD_SENS;
-			  sprintf(msg, "| %10lu. | %9.1f |\r\n", number_of_measurements, temperature);
+			  current_temperature = (resist_measure - NOMINAL_RESIST) / RTD_SENS;
+
+			  global_tenths = (int32_t)((current_temperature + 0.05f) * 10) % 10;
+			  global_tenths = global_tenths < 0 ? -global_tenths : global_tenths;
+
+
+			  sprintf(msg, "| %10lu. | %9.1f |\r\n", number_of_measurements, current_temperature);
+
+			  if (led_mode_active) {
+				  Update_LED_Frequency(global_tenths);
+			  }
+			  else {
+				  HAL_TIM_Base_Stop_IT(&htim3);
+				  HAL_GPIO_WritePin(UserLED_GPIO_Port, UserLED_Pin, GPIO_PIN_SET);
+			  }
 		  }
 		  else sprintf(msg, "Error: POR State\r\n");
 
@@ -304,6 +368,51 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 1599;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 999;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -321,7 +430,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(UserLED_GPIO_Port, UserLED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(UserLED_GPIO_Port, UserLED_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_SET);
@@ -332,6 +441,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(UserLED_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : UserKEY_Pin */
+  GPIO_InitStruct.Pin = UserKEY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(UserKEY_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : SPI1_CS_Pin */
   GPIO_InitStruct.Pin = SPI1_CS_Pin;
@@ -350,6 +465,12 @@ static void MX_GPIO_Init(void)
 void HAL_TIM_PeriodElapsedCallback (TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM2) {
 		timer_flag = 1;
+	}
+
+	if (htim->Instance == TIM3) {
+		if (led_mode_active) {
+			HAL_GPIO_TogglePin(UserLED_GPIO_Port, UserLED_Pin);
+		}
 	}
 }
 
